@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import com.droid2developers.liveslider.R;
 import com.droid2developers.liveslider.models.BiasChangeEvent;
 import com.droid2developers.liveslider.models.FaceRotationEvent;
 import com.droid2developers.liveslider.utils.Constant;
@@ -36,15 +37,25 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
     private final static float MAX_BIAS_RANGE = 0.006f;
     private final static String TAG = LiveWallpaperRenderer.class.getSimpleName();
 
-    private MutableLiveData<Float> mutableAlfa = null;  // Initial alpha value
+    // Parallax layers
+    private ParallaxLayer backgroundLayer;  // Di chuyển nhanh (factor = 1.4)
+    private ParallaxLayer foregroundLayer;  // Di chuyển chậm (factor = 1.0)
+    private static final float BACKGROUND_PARALLAX_FACTOR = 0.8f;
+    private static final float FOREGROUND_PARALLAX_FACTOR = 1.0f;
+    private static final float BACKGROUND_ALPHA = 1.0f;
+    private static final float FOREGROUND_ALPHA = 0.5f;
+
+    private MutableLiveData<Float> mutableAlfa = null;
     private final float[] mMVPMatrix = new float[16];
+    private final float[] mMVPMatrixBackground = new float[16];
+    private final float[] mMVPMatrixForeground = new float[16];
     private final float[] mProjectionMatrix = new float[16];
     private final float[] mViewMatrix = new float[16];
     private final Context mContext;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private float scrollStep = 1f;
     private final Queue<Float> scrollOffsetXQueue = new CircularFifoQueue<>(10);
-    private float scrollOffsetX = 0.5f;// , offsetY = 0.5f;
+    private float scrollOffsetX = 0.5f;
     private float scrollOffsetXBackup = 0.5f;
     private float currentOrientationOffsetX, currentOrientationOffsetY;
     private float orientationOffsetX, orientationOffsetY;
@@ -62,8 +73,7 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
     private float preA;
     private float preB;
 
-    // Important mutable parameters for live wallpaper
-    private Wallpaper wallpaper;
+    // Important mutable parameters
     private String localWallpaperPath = null;
     private int delay = 1;
     private float biasRange;
@@ -82,14 +92,18 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
     }
 
     void release() {
-        // TODO stuff to release
-        if (wallpaper != null)
-            wallpaper.destroy();
+        if (backgroundLayer != null) {
+            backgroundLayer.destroy();
+            backgroundLayer = null;
+        }
+        if (foregroundLayer != null) {
+            foregroundLayer.destroy();
+            foregroundLayer = null;
+        }
         stopTransition();
         scheduler.shutdown();
     }
 
-    // The Surface is created/init()
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         GLES20.glEnable(GLES20.GL_BLEND);
@@ -98,63 +112,79 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
         Wallpaper.initGl();
     }
 
-
-    // Transition methods
     void startTransition() {
         stopTransition();
         transitionHandle = scheduler.scheduleWithFixedDelay(transition,
                 0, 1000 / REFRESH_RATE, TimeUnit.MILLISECONDS);
     }
+
     void stopTransition() {
         if (transitionHandle != null) transitionHandle.cancel(true);
     }
 
-    // Here we do our drawing
     private boolean hasLoggedNullWallpaper = false;
     @Override
     public void onDrawFrame(GL10 gl) {
         if (needsRefreshWallpaper) {
-            loadTexture();
+            loadTextures();
             needsRefreshWallpaper = false;
         }
-        // Draw background color
+
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
-        // Only proceed if preA and preB are valid numbers
         if (Float.isNaN(preA) || Float.isNaN(preB) || Float.isInfinite(preA) || Float.isInfinite(preB)) {
             if (!hasLoggedNullWallpaper) {
-                Log.w(TAG, "onDrawFrame: Invalid matrix parameters (preA/preB), skipping draw");
+                Log.w(TAG, "onDrawFrame: Invalid matrix parameters, skipping draw");
                 hasLoggedNullWallpaper = true;
             }
             return;
         }
 
-        // Set the camera position (View matrix)
-        float x = preA * (-2 * scrollOffsetX + 1) + currentOrientationOffsetX;
-        float y = currentOrientationOffsetY;
-        Matrix.setLookAtM(mViewMatrix, 0, x, y, preB, x, y, 0f, 0f, 1.0f, 0.0f);
+        float globalAlpha = (mutableAlfa.getValue() != null) ? mutableAlfa.getValue() : 1.0f;
 
-        // Calculate the projection and view transformation
-        Matrix.multiplyMM(mMVPMatrix, 0, mProjectionMatrix, 0, mViewMatrix, 0);
+        // Draw BACKGROUND layer first (di chuyển nhanh hơn)
+        if (backgroundLayer != null && backgroundLayer.isEnabled()) {
+            float bgScrollOffset = calculateParallaxScrollOffset(scrollOffsetX, BACKGROUND_PARALLAX_FACTOR);
+            float bgOrientationX = currentOrientationOffsetX * BACKGROUND_PARALLAX_FACTOR;
+            float bgOrientationY = currentOrientationOffsetY * BACKGROUND_PARALLAX_FACTOR;
 
-        // Draw square
-        if (wallpaper != null) {
-            hasLoggedNullWallpaper = false;
-            if(mutableAlfa.getValue() == null) {
-                wallpaper.draw(mMVPMatrix, 1.0f);
-            } else {
-                wallpaper.draw(mMVPMatrix, mutableAlfa.getValue());
-            }
-        } else {
-            if (!hasLoggedNullWallpaper) {
-                Log.w(TAG, "onDrawFrame: wallpaper is null, skipping draw");
-                hasLoggedNullWallpaper = true;
-            }
+            float bgX = preA * (-2 * bgScrollOffset + 1) + bgOrientationX;
+            float bgY = bgOrientationY;
+
+            Matrix.setLookAtM(mViewMatrix, 0, bgX, bgY, preB, bgX, bgY, 0f, 0f, 1.0f, 0.0f);
+            Matrix.multiplyMM(mMVPMatrixBackground, 0, mProjectionMatrix, 0, mViewMatrix, 0);
+            backgroundLayer.draw(mMVPMatrixBackground, globalAlpha);
         }
+
+        // Draw FOREGROUND layer on top (di chuyển chậm hơn)
+        if (foregroundLayer != null && foregroundLayer.isEnabled()) {
+            float fgScrollOffset = calculateParallaxScrollOffset(scrollOffsetX, FOREGROUND_PARALLAX_FACTOR);
+            float fgOrientationX = currentOrientationOffsetX * FOREGROUND_PARALLAX_FACTOR;
+            float fgOrientationY = currentOrientationOffsetY * FOREGROUND_PARALLAX_FACTOR;
+
+            float fgX = preA * (-2 * fgScrollOffset + 1) + fgOrientationX;
+            float fgY = fgOrientationY;
+
+            Matrix.setLookAtM(mViewMatrix, 0, fgX, fgY, preB, fgX, fgY, 0f, 0f, 1.0f, 0.0f);
+            Matrix.multiplyMM(mMVPMatrixForeground, 0, mProjectionMatrix, 0, mViewMatrix, 0);
+            foregroundLayer.draw(mMVPMatrixForeground, globalAlpha);
+        }
+
+        hasLoggedNullWallpaper = false;
+    }
+
+    /**
+     * Calculate scroll offset adjusted for parallax factor
+     * Factor > 1.0 = moves faster, Factor < 1.0 = moves slower
+     */
+    private float calculateParallaxScrollOffset(float baseOffset, float parallaxFactor) {
+        // Center the offset around 0.5, apply factor, then restore
+        float centered = baseOffset - 0.5f;
+        float adjusted = centered * parallaxFactor;
+        return adjusted + 0.5f;
     }
 
     private void preCalculate() {
-        // Guard against zero or invalid aspect ratios
         if (screenAspectRatio == 0 || Float.isNaN(screenAspectRatio) || Float.isInfinite(screenAspectRatio)) {
             preA = Float.NaN;
             preB = Float.NaN;
@@ -176,39 +206,34 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
         } else {
             scrollRange = 1;
         }
-        // ------------------------------------------------------
-        preA = screenAspectRatio * (scrollRange - 1);
-        // preB = -1f;
+
+        // Adjust for maximum parallax factor to prevent clipping
+        float maxFactor = Math.max(BACKGROUND_PARALLAX_FACTOR, FOREGROUND_PARALLAX_FACTOR);
+        preA = screenAspectRatio * (scrollRange - 1) * maxFactor;
+
         if (screenAspectRatio < 1)
-            preB = -1.0f + (biasRange / screenAspectRatio);
+            preB = -1.0f + (biasRange / screenAspectRatio) * maxFactor;
         else
-            preB = -1.0f + (biasRange * screenAspectRatio);
+            preB = -1.0f + (biasRange * screenAspectRatio) * maxFactor;
     }
 
-    // If the surface changes, reset the view
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
-        if (height == 0) { // Prevent A Divide By Zero By
-            height = 1; // Making Height Equal One
+        if (height == 0) {
+            height = 1;
         }
 
         screenAspectRatio = (float) width / (float) height;
         screenH = height;
 
         GLES20.glViewport(0, 0, width, height);
-
-        // this projection matrix is applied to object coordinates
-        // in the onDrawFrame() method
         Matrix.frustumM(mProjectionMatrix, 0, -0.1f * screenAspectRatio,
                 0.1f * screenAspectRatio, -0.1f, 0.1f, 0.1f, 2);
 
         needsRefreshWallpaper = true;
-//        loadTexture();
         mCallbacks.requestRender();
     }
 
-
-    // Setters for the changes in the localWallpaperPath and refresh for the same
     void setOffset(float offsetX, float offsetY) {
         if (scrollMode) {
             scrollOffsetXBackup = offsetX;
@@ -217,6 +242,7 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
             scrollOffsetXBackup = offsetX;
         }
     }
+
     void setOffsetStep(float offsetStepX, float offsetStepY) {
         if (scrollStep != offsetStepX) {
             scrollStep = offsetStepX;
@@ -230,7 +256,6 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
     }
 
     void setNewFaceRotation(int face) {
-        // Fire FaceRotationEvent for UI updates
         EventBus.getDefault().post(new FaceRotationEvent(face));
     }
 
@@ -249,9 +274,11 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
         preCalculate();
         mCallbacks.requestRender();
     }
+
     void setDelay(int delay) {
         this.delay = delay;
     }
+
     void setScrollMode(boolean scrollMode) {
         this.scrollMode = scrollMode;
         if (scrollMode)
@@ -260,23 +287,21 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
             scrollOffsetXQueue.clear();
             scrollOffsetXQueue.offer(0.5f);
         }
-//        noScroll = false;
     }
-    void setLocalWallpaperPath(String name){
+
+    void setLocalWallpaperPath(String name) {
         localWallpaperPath = name;
     }
+
     void setIsDefaultWallpaper(boolean isDefault) {
         isDefaultWallpaper = isDefault;
     }
-    void setWallpaperType(int wallpaperType){
+
+    void setWallpaperType(int wallpaperType) {
         this.wallpaperType = wallpaperType;
     }
 
-
-
-    // refreshes current wallpaper and update canvas
-    void refreshWallpaper(String wallpaperPath, boolean isDefault){
-        // Create a fade-out -> change wallpaper -> fade-in sequence
+    void refreshWallpaper(String wallpaperPath, boolean isDefault) {
         Runnable fadeOutThenInRunnable = new Runnable() {
             private float alpha = 1.0f;
             private boolean fadeOutComplete = false;
@@ -285,21 +310,18 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
             @Override
             public void run() {
                 if (!fadeOutComplete) {
-                    // Fade out phase
-                    alpha -= 0.05f; // Fade out speed
+                    alpha -= 0.05f;
 
                     if (alpha <= 0.0f) {
                         alpha = 0.0f;
                         fadeOutComplete = true;
 
-                        // Change wallpaper when screen is completely dark
                         if (!wallpaperChanged) {
                             setLocalWallpaperPath(wallpaperPath);
                             setIsDefaultWallpaper(isDefault);
                             needsRefreshWallpaper = true;
                             wallpaperChanged = true;
 
-                            // Small delay to ensure wallpaper is loaded before fade-in
                             animationHandler.postDelayed(this, 50);
                             mutableAlfa.setValue(alpha);
                             mCallbacks.requestRender();
@@ -307,38 +329,32 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
                         }
                     }
                 } else {
-                    // Fade in phase - show new wallpaper
-                    alpha += 0.04f; // Fade in speed
+                    alpha += 0.04f;
 
                     if (alpha >= 1.0f) {
                         alpha = 1.0f;
                         mutableAlfa.setValue(alpha);
                         mCallbacks.requestRender();
-                        // Animation complete
                         return;
                     }
                 }
 
                 mutableAlfa.setValue(alpha);
                 mCallbacks.requestRender();
-
-                // Continue animation
-                animationHandler.postDelayed(this, 16); // 60 FPS
+                animationHandler.postDelayed(this, 16);
             }
         };
 
         animationHandler.post(fadeOutThenInRunnable);
     }
 
-
-    // Calculate the transition offsets and refresh smooth effect in canvas
     private void transitionCal() {
         boolean needRefresh = false;
-//        Log.d(TAG, "transitionCal: DELAY:" + delay);
+
         if (Math.abs(currentOrientationOffsetX - orientationOffsetX) > .0001
                 || Math.abs(currentOrientationOffsetY - orientationOffsetY) > .0001) {
 
-            if(delay == 1) {
+            if (delay == 1) {
                 currentOrientationOffsetX += (orientationOffsetX - currentOrientationOffsetX) * 0.8f;
                 currentOrientationOffsetY += (orientationOffsetY - currentOrientationOffsetY) * 0.8f;
             } else {
@@ -355,76 +371,110 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
             needRefresh = true;
         }
         if (!scrollOffsetXQueue.isEmpty()) {
-            //noinspection ConstantConditions
             scrollOffsetX = scrollOffsetXQueue.poll();
             needRefresh = true;
         }
         if (needRefresh) mCallbacks.requestRender();
     }
 
-
-    // Create and loads new Wallpaper from the required settings
-    private void loadTexture() {
+    /**
+     * Load both background and foreground textures
+     */
+    private void loadTextures() {
         System.gc();
+
+        // Load BACKGROUND layer (default from drawable)
+        Bitmap backgroundBitmap = loadBackgroundBitmap();
+        if (backgroundBitmap != null) {
+            if (backgroundLayer != null) {
+                backgroundLayer.destroy();
+            }
+            Bitmap croppedBg = cropBitmap(backgroundBitmap);
+            backgroundLayer = new ParallaxLayer(croppedBg, BACKGROUND_PARALLAX_FACTOR,
+                    BACKGROUND_ALPHA, "Background");
+        }
+
+        // Load FOREGROUND layer (user selected image)
         FileInputStream is = null;
-        if (wallpaperType == TYPE_SINGLE){
+        if (wallpaperType == TYPE_SINGLE) {
             if (!isDefaultWallpaper) {
                 try {
                     is = new FileInputStream(localWallpaperPath);
                 } catch (FileNotFoundException e) {
-                    Log.e(TAG, "loadTexture: FileNotFoundException for path: " + localWallpaperPath, e);
-                    refreshWallpaper(DEFAULT_LOCAL_PATH,true);
+                    Log.e(TAG, "FileNotFoundException for foreground: " + localWallpaperPath, e);
+                    refreshWallpaper(DEFAULT_LOCAL_PATH, true);
                 }
             } else {
                 try {
                     AssetFileDescriptor fileDescriptor = mContext.getAssets().openFd(Constant.DEFAULT_WALLPAPER_NAME);
                     is = fileDescriptor.createInputStream();
                 } catch (IOException e) {
-                    Log.e(TAG, "loadTexture: IOException loading default wallpaper", e);
+                    Log.e(TAG, "IOException loading default foreground", e);
                 }
             }
         } else {
             try {
                 is = new FileInputStream(localWallpaperPath);
             } catch (FileNotFoundException e) {
-                Log.e(TAG, "loadTexture: FileNotFoundException for path: " + localWallpaperPath, e);
-                refreshWallpaper(DEFAULT_LOCAL_PATH,true);
+                Log.e(TAG, "FileNotFoundException for foreground: " + localWallpaperPath, e);
+                refreshWallpaper(DEFAULT_LOCAL_PATH, true);
             }
         }
-        if (is == null) {
-            Log.e(TAG, "loadTexture: InputStream is null, cannot load wallpaper");
-            return;
+
+        if (is != null) {
+            if (foregroundLayer != null) {
+                foregroundLayer.destroy();
+            }
+            Bitmap foregroundBmp = cropBitmap(is);
+            foregroundLayer = new ParallaxLayer(foregroundBmp, FOREGROUND_PARALLAX_FACTOR,
+                    FOREGROUND_ALPHA, "Foreground");
+            try {
+                is.close();
+            } catch (IOException e) {
+                Log.e(TAG, "IOException closing foreground stream", e);
+            }
         }
-        if (wallpaper != null)
-            wallpaper.destroy();
-        Bitmap bmp = cropBitmap(is);
-        if (bmp == null) {
-            Log.e(TAG, "loadTexture: cropBitmap returned null, cannot create wallpaper");
-            return;
-        }
-        wallpaper = new Wallpaper(bmp);
+
         preCalculate();
-        try {
-            is.close();
-        } catch (IOException e) {
-            Log.e(TAG, "loadTexture: IOException closing InputStream", e);
-        }
         System.gc();
     }
+
+    /**
+     * Load default background image from drawable
+     */
+    private Bitmap loadBackgroundBitmap() {
+        try {
+            // Tên file: parallax_background.png trong drawable
+            Bitmap bitmap = BitmapFactory.decodeResource(mContext.getResources(), R.drawable.parallax_background);
+            Log.d(TAG, "Loaded parallax_background successfully");
+            return bitmap;
+        } catch (Exception e) {
+            Log.e(TAG, "Error loading parallax_background from drawable", e);
+            return null;
+        }
+    }
+
     private Bitmap cropBitmap(InputStream is) {
         Bitmap src = BitmapFactory.decodeStream(is);
         if (src == null) {
-            Log.e(TAG, "cropBitmap: BitmapFactory.decodeStream returned null");
+            Log.e(TAG, "cropBitmap: BitmapFactory returned null");
             return null;
         }
+        return cropBitmap(src);
+    }
+
+    private Bitmap cropBitmap(Bitmap src) {
+        if (src == null) return null;
+
         final float width = src.getWidth();
         final float height = src.getHeight();
         if (height == 0) {
-            Log.e(TAG, "cropBitmap: height is zero, cannot calculate aspect ratio");
+            Log.e(TAG, "cropBitmap: height is zero");
             src.recycle();
             return null;
         }
         wallpaperAspectRatio = width / height;
+
         if (wallpaperAspectRatio < screenAspectRatio) {
             scrollRange = 1;
             Bitmap tmp = Bitmap.createBitmap(src, 0,
@@ -451,8 +501,6 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
         }
     }
 
-
-    // Internal Callback for refreshing the current canvas
     interface Callbacks {
         void requestRender();
     }

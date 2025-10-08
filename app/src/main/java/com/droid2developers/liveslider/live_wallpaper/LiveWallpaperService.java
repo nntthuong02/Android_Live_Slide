@@ -185,11 +185,11 @@ public class LiveWallpaperService extends GLWallpaperService {
         @Override
         public void onOffsetsChanged(float xOffset, float yOffset, float xOffsetStep, float yOffsetStep,
                                      int xPixelOffset, int yPixelOffset) {
-            if (!isPreview()) {
-                renderer.setOffset(xOffset, yOffset);
-                renderer.setOffsetStep(xOffsetStep, yOffsetStep);
-                Log.i(TAG, xOffset + ", " + yOffset + ", " + xOffsetStep + ", " + yOffsetStep);
-            }
+            // if (!isPreview()) {
+            //     renderer.setOffset(xOffset, yOffset);
+            //     renderer.setOffsetStep(xOffsetStep, yOffsetStep);
+            //     Log.i(TAG, xOffset + ", " + yOffset + ", " + xOffsetStep + ", " + yOffsetStep);
+            // }
         }
 
 
