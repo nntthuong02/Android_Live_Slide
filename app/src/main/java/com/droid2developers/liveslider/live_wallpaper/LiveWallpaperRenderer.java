@@ -40,7 +40,7 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
     // Parallax layers
     private ParallaxLayer backgroundLayer;  // Di chuyển nhanh (factor = 1.4)
     private ParallaxLayer foregroundLayer;  // Di chuyển chậm (factor = 1.0)
-    private static final float BACKGROUND_PARALLAX_FACTOR = 0.8f;
+    private static final float BACKGROUND_PARALLAX_FACTOR = 1.6f;
     private static final float FOREGROUND_PARALLAX_FACTOR = 1.0f;
     private static final float BACKGROUND_ALPHA = 1.0f;
     private static final float FOREGROUND_ALPHA = 0.5f;
@@ -207,14 +207,14 @@ public class LiveWallpaperRenderer implements GLSurfaceView.Renderer {
             scrollRange = 1;
         }
 
-        // Adjust for maximum parallax factor to prevent clipping
-        float maxFactor = Math.max(BACKGROUND_PARALLAX_FACTOR, FOREGROUND_PARALLAX_FACTOR);
-        preA = screenAspectRatio * (scrollRange - 1) * maxFactor;
+        // Use foreground factor as baseline so foreground keeps original movement
+        float baseFactor = FOREGROUND_PARALLAX_FACTOR;
+        preA = screenAspectRatio * (scrollRange - 1) * baseFactor;
 
         if (screenAspectRatio < 1)
-            preB = -1.0f + (biasRange / screenAspectRatio) * maxFactor;
+            preB = -1.0f + (biasRange / screenAspectRatio) * baseFactor;
         else
-            preB = -1.0f + (biasRange * screenAspectRatio) * maxFactor;
+            preB = -1.0f + (biasRange * screenAspectRatio) * baseFactor;
     }
 
     @Override
